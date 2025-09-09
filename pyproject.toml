@@ -1,0 +1,58 @@
+[build-system]
+build-backend = "setuptools.build_meta"
+requires = [
+  "setuptools>=42",
+  "setuptools-scm",
+  "wheel",
+]
+
+[project]
+name = "ATNnc2DwC"
+description = "Convert ATN Satellite Telemetry NetCDF to Darwin Core Archive"
+readme = "README.md"
+license = { file = "LICENSE.txt" }
+maintainers = [
+  { name = "Mathew Biddle", email = "mathew.biddle@noaa.gov" },
+]
+requires-python = ">=3.10"
+classifiers = [
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+]
+dynamic = [
+  "dependencies",
+  "version",
+]
+urls.documentation = "https://ioos.github.io/ATNnc2DwC"
+urls.homepage = "https://github.com/ioos/ATNnc2DwC"
+urls.repository = "https://github.com/ioos/ATNnc2DwC"
+
+[tool.setuptools]
+packages = [
+  "ATNnc2DwC",
+]
+include-package-data = true
+
+[tool.setuptools.dynamic]
+dependencies = { file = [
+  "requirements.txt",
+] }
+
+[tool.setuptools_scm]
+write_to = "ATNnc2DwC/_version.py"
+write_to_template = "__version__ = '{version}'"
+tag_regex = "^(?P<prefix>v)?(?P<version>[^\\+]+)(?P<suffix>.*)?$"
+
+[tool.check-manifest]
+ignore = [
+  "*.yml",
+  "docs",
+  "docs/*",
+  "notebooks",
+  "notebooks/*",
+  "tests",
+  "tests/*",
+]

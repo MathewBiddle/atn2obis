@@ -1,0 +1,11 @@
+bs4
+jinja2
+netCDF4
+owslib
+pandas
+python-dotenv
+requests
+requests-toolbelt
+shapely
+stamina
+xarray
