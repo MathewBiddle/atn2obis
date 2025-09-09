@@ -648,7 +648,7 @@ def package_dwc_zip(output_dir="data/dwc", zip_filename="data/dwc_package.zip"):
     print(f"  ✅ Packaged files into '{zip_filename}'")
 
 
-def convert_to_dwc_individual(file_paths, output_dir="data/dwc"):
+def convert_to_dwc_individual(file_paths, df_map, output_dir="data/dwc"):
     """
     Converts a list of NetCDF files to individual Darwin Core Occurrence CSVs.
 
