@@ -32,7 +32,7 @@ urls.repository = "https://github.com/ioos/atn-to-obis"
 
 [tool.setuptools]
 packages = [
-  "atn-to-obis",
+  "atn_to_obis",
 ]
 include-package-data = true
 
@@ -42,7 +42,7 @@ dependencies = { file = [
 ] }
 
 [tool.setuptools_scm]
-write_to = "atn-to-obis/_version.py"
+write_to = "atn_to_obis//_version.py"
 write_to_template = "__version__ = '{version}'"
 tag_regex = "^(?P<prefix>v)?(?P<version>[^\\+]+)(?P<suffix>.*)?$"
 
