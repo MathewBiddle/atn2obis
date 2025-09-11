@@ -7,7 +7,7 @@ requires = [
 ]
 
 [project]
-name = "atn-to-obis"
+name = "atn2obis"
 description = "Convert ATN Satellite Telemetry NetCDF to Darwin Core Archive"
 readme = "README.md"
 license = { file = "LICENSE.txt" }
@@ -26,13 +26,13 @@ dynamic = [
   "dependencies",
   "version",
 ]
-urls.documentation = "https://ioos.github.io/atn-to-obis/"
-urls.homepage = "https://github.com/ioos/atn-to-obis"
-urls.repository = "https://github.com/ioos/atn-to-obis"
+urls.documentation = "https://ioos.github.io/atn2obis/"
+urls.homepage = "https://github.com/ioos/atn2obis"
+urls.repository = "https://github.com/ioos/atn2obis"
 
 [tool.setuptools]
 packages = [
-  "atn-to-obis",
+  "atn2obis",
 ]
 include-package-data = true
 
@@ -42,7 +42,7 @@ dependencies = { file = [
 ] }
 
 [tool.setuptools_scm]
-write_to = "atn-to-obis/_version.py"
+write_to = "atn2obis//_version.py"
 write_to_template = "__version__ = '{version}'"
 tag_regex = "^(?P<prefix>v)?(?P<version>[^\\+]+)(?P<suffix>.*)?$"
 
