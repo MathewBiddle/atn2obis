@@ -1,6 +1,7 @@
 import re
 import shapely
 import os  # replace with pathlib
+from pathlib import Path
 import codecs  # should not be necessary in py>=3
 from jinja2 import Template
 import xarray as xr
@@ -220,7 +221,7 @@ def create_dwc_event(ds: xr.Dataset, dwc_df: pd.DataFrame, output_csv: str):
 
     ## Convex hull summary of the points
     points = list(zip(dwc_df["decimalLongitude"], dwc_df["decimalLatitude"]))
-    event_df["footprintWKT"] = shapely.convex_hull(LineString(points))
+    event_df["footprintWKT"] = shapely.convex_hull(shapely.LineString(points))
 
     event_df["minimumDepthInMeters"] = dwc_df["minimumDepthInMeters"].min()
     event_df["maximumDepthInMeters"] = dwc_df["maximumDepthInMeters"].max()
@@ -363,7 +364,7 @@ def create_meta_xml(
     dwc_df: pd.DataFrame,
     emof_df: pd.DataFrame,
     event_df: pd.DataFrame,
-    output_csv: str,
+    output_csv: Path,
     cols: list,
 ):
     """
@@ -377,10 +378,8 @@ def create_meta_xml(
         dir (str): Directory where the meta.xml will be saved.
         cols (list): List of occurrence columns to include in the meta.xml.
     """
-    # Ensure the directory exists
-    try:
-        os.path.exists(output_csv)
-    except:
+    if not output_csv.exists():
+        # FIXME: Should we raise something here?
         print(f"Missing directory: {output_csv}")
 
     # create and include the meta.xml and eml.xml
@@ -401,6 +400,8 @@ def create_meta_xml(
     meta_template_file = codecs.open("templates/meta.xml.j2", "r", "UTF-8").read()
     meta_template = Template(meta_template_file)
     meta_result_string = meta_template.render(meta_xml_vars)
+    # FIXME: Use pathlib and avoid Windows doulble \
+    # FIXME: Do not clobber built-in `dir`.
     dir = os.path.join(*output_csv.split("\\")[:-1])
     meta_file = f"{dir}/meta.xml"
 
@@ -411,7 +412,7 @@ def create_meta_xml(
     print(f"  Meta XML has been written to '{meta_full_path}'.")
 
 
-def convert_to_dwc_individual(fname):
+def convert_to_dwc_individual(fname, output_csv: Path):
     with xr.open_dataset(fname, engine="netcdf4") as ds:
         df = ds.to_dataframe().reset_index()
 
