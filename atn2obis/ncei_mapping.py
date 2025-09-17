@@ -145,11 +145,12 @@ def _get_ncei_accession_mapping():
     return df_map
 
 
-
 def get_ncei_accession_mapping(refresh=False):
     if refresh:
         ncei_accession_mapping = _get_ncei_accession_mapping()
     else:
         path = Path(__file__).absolute().parent
-        ncei_accession_mapping = pd.read_csv(path.joinpath("ncei_accession_mapping.csv"))
+        ncei_accession_mapping = pd.read_csv(
+            path.joinpath("ncei_accession_mapping.csv")
+        )
     return ncei_accession_mapping

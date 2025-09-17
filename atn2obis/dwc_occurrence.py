@@ -1,7 +1,6 @@
-from ncei_mapping import ncei_accession_mapping
-
-
-def create_dwc_occurrence(ds: xr.Dataset, output_csv: str, ncei_accession_mapping: pd.DataFrame):
+def create_dwc_occurrence(
+    ds: xr.Dataset, output_csv: str, ncei_accession_mapping: pd.DataFrame
+):
     """Create a Darwin Core Occurrence CSV from an xarray Dataset."""
     source_file = os.path.basename(ds.encoding.get("source"))
     # bail if we can't find the file in the mapping table.
@@ -12,7 +11,9 @@ def create_dwc_occurrence(ds: xr.Dataset, output_csv: str, ncei_accession_mappin
         0
     ]  # "ioos_atn_{ds.ptt_id}_{start_date}_{end_date}""
 
-    file_map_entry = ncei_accession_mapping[ncei_accession_mapping["file_name"] == source_file].iloc[0]
+    file_map_entry = ncei_accession_mapping[
+        ncei_accession_mapping["file_name"] == source_file
+    ].iloc[0]
 
     acce_no = file_map_entry["accession"]
     related_data_url = file_map_entry["related_data_url"]
@@ -129,3 +130,33 @@ def create_dwc_occurrence(ds: xr.Dataset, output_csv: str, ncei_accession_mappin
     print(f"  Saved data to '{output_csv}'")
 
     return dwc_df, cols
+
+
+def convert_to_dwc_individual(fname):
+    with xr.open_dataset(fname, engine="netcdf4") as ds:
+        df = ds.to_dataframe().reset_index()
+
+        print(f"Found {len(df)} records.")
+
+        # --- Data Cleaning and Preparation ---
+        if "lat" not in df.columns or "lon" not in df.columns:
+            msg = f"Skipping {fname}: missing location data."
+            raise ValueError(msg)
+
+        df.dropna(subset=["lat", "lon", "time"], inplace=True)
+        if df.empty:
+            msg = f"Skipping {fname}: no valid records."
+            raise ValueError(msg)
+
+        # --- Map to Darwin Core Occurrence Terms ---
+        dwc_df, cols = create_dwc_occurrence(ds, output_csv, df_map)
+
+        # Create and save eml
+        create_eml(ds, df_map)
+
+        # --- Event and eMoF (as needed) ---
+        event_df = create_dwc_event(ds, dwc_df, output_csv)
+        emof_df = create_dwc_emof(ds, dwc_df, output_csv)
+
+        # --- Create meta.xml file ---
+        create_meta_xml(dwc_df, emof_df, event_df, output_csv, cols)
