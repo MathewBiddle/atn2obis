@@ -17,7 +17,7 @@ def _openurl_with_retry(url):
 
 
 @functools.lru_cache(maxsize=128)
-def get_ncei_accession_mapping():
+def _get_ncei_accession_mapping():
     """
     Scrapes NCEI for ATN accession numbers and associated file metadata.
 
@@ -145,8 +145,11 @@ def get_ncei_accession_mapping():
     return df_map
 
 
-try:
-    ncei_accession_mapping = get_ncei_accession_mapping()
-except urllib.error.HTTPError:
-    path = Path(__file__).absolute().parent
-    ncei_accession_mapping = pd.read_csv(path.joinpath("ncei_accession_mapping.csv"))
+
+def get_ncei_accession_mapping(refresh=False):
+    if refresh:
+        ncei_accession_mapping = _get_ncei_accession_mapping()
+    else:
+        path = Path(__file__).absolute().parent
+        ncei_accession_mapping = pd.read_csv(path.joinpath("ncei_accession_mapping.csv"))
+    return ncei_accession_mapping
