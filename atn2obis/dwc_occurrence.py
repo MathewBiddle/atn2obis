@@ -1,19 +1,27 @@
-def create_dwc_occurrence(
-    ds: xr.Dataset, output_csv: str, ncei_accession_mapping: pd.DataFrame
-):
+import re
+import shapely
+import os  # replace with pathlib
+import codecs  # should not be necessary in py>=3
+from jinja2 import Template
+import xarray as xr
+import pandas as pd
+
+
+from ncei_mapping import ncei_accession_mapping as df_map
+
+
+def create_dwc_occurrence(ds: xr.Dataset, output_csv: str, df_map: pd.DataFrame):
     """Create a Darwin Core Occurrence CSV from an xarray Dataset."""
     source_file = os.path.basename(ds.encoding.get("source"))
     # bail if we can't find the file in the mapping table.
-    if source_file not in ncei_accession_mapping["file_name"].values:
+    if source_file not in df_map["file_name"].values:
         raise KeyError(f"File {source_file} not found in NCEI Accession mapping table.")
 
     filename = os.path.splitext(source_file)[
         0
     ]  # "ioos_atn_{ds.ptt_id}_{start_date}_{end_date}""
 
-    file_map_entry = ncei_accession_mapping[
-        ncei_accession_mapping["file_name"] == source_file
-    ].iloc[0]
+    file_map_entry = df_map[df_map["file_name"] == source_file].iloc[0]
 
     acce_no = file_map_entry["accession"]
     related_data_url = file_map_entry["related_data_url"]
@@ -130,6 +138,277 @@ def create_dwc_occurrence(
     print(f"  Saved data to '{output_csv}'")
 
     return dwc_df, cols
+
+
+def save_eml_file(eml_metadata: dict) -> str:
+    """
+    Save EML dictionary in a file
+    Author: Jon Pye, Angela Dini
+    Maintainer: Angela Dini
+    :param eml_metadata: dictionary of EML metadata
+    :return: filepath of where the EML filepath will be
+    """
+    # Write it out to the package
+    template_file = codecs.open("templates/eml.xml.j2", "r", "UTF-8").read()
+    template = Template(template_file)
+    result_string = template.render(eml_metadata)
+    eml_file = "data/dwc/{filename}/eml.xml".format(**eml_metadata)
+    fh = codecs.open(eml_file, "wb+", "UTF-8")
+    fh.write(result_string)
+    fh.close()
+    eml_full_path = os.path.abspath(eml_file)
+    print(f"  EML metadata has been written to '{eml_full_path}'.")
+    return eml_full_path
+
+
+def create_eml(ds: xr.Dataset, df_map: pd.DataFrame):
+    eml_metadata = ds.attrs
+    source_file = os.path.basename(ds.encoding.get("source"))
+    file_map_entry = df_map[df_map["file_name"] == source_file].iloc[0]
+
+    contributors = dict()
+    for attr in [
+        x for x in ds.attrs if re.match(r"contributor_(?!role_vocabulary\b).*", x)
+    ]:
+        contributors[attr] = ds.attrs[attr].split(",")
+
+    contributors_list = [
+        {key: contributors[key][i] for key in contributors}
+        for i in range(len(next(iter(contributors.values()))))
+    ]
+
+    other_meta = {
+        "dataset_ipt_id": None,
+        "dataset_short_name": ds.encoding.get("source")
+        .split("\\")[-1]
+        .replace(".nc", ""),
+        "data_manager_firstname": "Megan",
+        "data_manager_lastname": "McKinzie",
+        "data_manager_title": "Data Manager",
+        "data_manager_phone": "",
+        "data_manager_email": "mmckinzie@mbari.org",
+        "contributors": contributors_list,
+        "ncei_accession_number": file_map_entry[
+            "accession"
+        ],  # df_map.loc[df_map['file_name'] == ds.encoding.get('source').split("\\")[-1], 'accession'].values[0],
+        "related_data_url": file_map_entry["related_data_url"],
+        "related_data_citation": file_map_entry["related_data_citation"],
+        "ncei_title": file_map_entry[
+            "title"
+        ],  # df_map.loc[df_map['file_name'] == ds.encoding.get('source').split("\\")[-1], 'title'].values[0],
+        "filename": os.path.splitext(source_file)[0],
+        "nc_globals": str(ds.attrs),
+    }
+
+    eml_metadata.update(other_meta)
+
+    instrument_info = ds["instrument_tag"].attrs
+
+    eml_metadata.update(instrument_info)
+
+    save_eml_file(eml_metadata)
+
+    return eml_metadata
+
+
+## Create the DwC Event file from the occurrences.
+def create_dwc_event(ds: xr.Dataset, dwc_df: pd.DataFrame, output_csv: str):
+    # create parent event that is a summary of dwc_df
+    event_df = pd.DataFrame()
+    event_df["eventID"] = dwc_df["eventID"].unique()
+    event_df["eventDate"] = dwc_df["eventDate"].min() + "/" + dwc_df["eventDate"].max()
+
+    ## Convex hull summary of the points
+    points = list(zip(dwc_df["decimalLongitude"], dwc_df["decimalLatitude"]))
+    event_df["footprintWKT"] = shapely.convex_hull(LineString(points))
+
+    event_df["minimumDepthInMeters"] = dwc_df["minimumDepthInMeters"].min()
+    event_df["maximumDepthInMeters"] = dwc_df["maximumDepthInMeters"].max()
+    event_df["eventType"] = "deployment"
+    event_df["countryCode"] = "US"
+    event_df["samplingProtocol"] = "satellite telemetry"
+    event_df["dynamicProperties"] = [str(ds.attrs)]
+
+    event_df.to_csv(output_csv.replace("occurrence", "event"), index=False)
+    print(f"  Created {len(event_df)} events.")
+    print(f"  Saved data to {output_csv.replace('occurrence', 'event')}")
+
+    return event_df
+
+
+## Create the DwC Extended Measurement or Fact (eMoF) file.
+def create_dwc_emof(ds: xr.Dataset, dwc_df: pd.DataFrame, output_csv: str):
+    # --- Creates the DwC Extended Measurement or Fact (eMoF) file. ---
+    vars = list(ds.keys())
+    animal_vars = [x for x in vars if re.match(r"animal_(?!life_stage\b|sex\b).*", x)]
+    new_rows = pd.DataFrame()
+
+    emof_ids = {
+        "animal_weight": "http://vocab.nerc.ac.uk/collection/MVB/current/MVB000019",
+        "animal_length": "http://vocab.nerc.ac.uk/collection/P01/current/TL01XX01/",
+    }
+
+    emof_unit_ids = {
+        "kg": "http://vocab.nerc.ac.uk/collection/P06/current/KGXX/",
+        "cm": "http://vocab.nerc.ac.uk/collection/P06/current/ULCM/",
+    }
+
+    for animal_var in animal_vars:
+        row = pd.DataFrame(
+            {
+                "measurementValue": ds[animal_var].values.tolist(),
+                "measurementType": [f"{animal_var}: {ds[animal_var].long_name}"],
+                "measurementTypeID": [
+                    emof_ids[animal_var] if animal_var in emof_ids.keys() else ""
+                ],
+                "measurementMethod": ds[animal_var].attrs[animal_var],
+                "measurementUnit": [
+                    ds[animal_var].units if "units" in ds[animal_var].attrs else ""
+                ],
+                "measurementUnitID": [
+                    emof_unit_ids[ds[animal_var].units]
+                    if ds[animal_var].units in emof_unit_ids.keys()
+                    else ""
+                ],
+            }
+        )
+        new_rows = pd.concat([new_rows, row])
+
+    df_transmitter_serial = pd.DataFrame(
+        {
+            "measurementValue": [ds["instrument_tag"].attrs["serial_number"]],
+            "measurementType": ["tag serial number"],
+            "measurementTypeID": [
+                "http://vocab.nerc.ac.uk/collection/MVB/current/MVB000189/"
+            ],
+            "measurementMethod": [""],
+            "measurementUnit": [""],
+        }
+    )
+    new_rows = pd.concat([new_rows, df_transmitter_serial], ignore_index=True)
+
+    tag_manu = pd.DataFrame(
+        {
+            "measurementValue": [ds["instrument_tag"].attrs["manufacturer"]],
+            "measurementType": ["tag manufacturer"],
+            "measurementTypeID": [
+                "http://vocab.nerc.ac.uk/collection/MVB/current/MVB000183/"
+            ],
+            "measurementMethod": [""],
+            "measurementUnit": [""],
+        }
+    )
+    new_rows = pd.concat([new_rows, tag_manu], ignore_index=True)
+
+    tag_makemodel = pd.DataFrame(
+        {
+            "measurementValue": [ds["instrument_tag"].attrs["make_model"]],
+            "measurementType": ["tag make and model"],
+            "measurementTypeID": [
+                "http://vocab.nerc.ac.uk/collection/MVB/current/MVB000185/"
+            ],
+            "measurementMethod": [""],
+            "measurementUnit": [""],
+        }
+    )
+    new_rows = pd.concat([new_rows, tag_makemodel], ignore_index=True)
+
+    # sometimes we don't have attachment information
+    if "attachment" in ds.attrs:
+        attachment_location = pd.DataFrame(
+            {
+                "measurementValue": [ds.attrs["attachment"]],
+                "measurementType": ["tag attachment location"],
+                "measurementTypeID": [
+                    "http://vocab.nerc.ac.uk/collection/MVB/current/MVB000395/"
+                ],
+                "measurementMethod": [""],
+                "measurementUnit": [""],
+            }
+        )
+        new_rows = pd.concat([new_rows, attachment_location], ignore_index=True)
+
+    # --- Add eventID and occurrenceID. Assign the first occurrenceID and eventID from the dwc_df.
+    new_rows["eventID"] = dwc_df["eventID"].iloc[0]
+    new_rows["occurrenceID"] = dwc_df["occurrenceID"].iloc[0]
+
+    # --- Select column order because this matters for meta.xml
+    columns = [
+        "eventID",
+        "occurrenceID",
+        "measurementValue",
+        "measurementType",
+        "measurementTypeID",
+        "measurementMethod",
+        "measurementUnit",
+        "measurementUnitID",
+    ]
+
+    emof_df = new_rows[columns].copy()
+
+    # drop any empty value rows.
+    emof_df.dropna(axis=0, subset=["measurementValue"], inplace=True)
+
+    if emof_df.empty:
+        print("  no emof data found")
+        return pd.DataFrame()  # Return an empty DataFrame if no observations are found
+    else:
+        emof_df.to_csv(output_csv.replace("occurrence", "emof"), index=False)
+        print(f"  Created {len(emof_df)} emofs.")
+        print(f"  Saved data to {output_csv.replace('occurrence', 'emof')}")
+        return emof_df
+
+
+def create_meta_xml(
+    dwc_df: pd.DataFrame,
+    emof_df: pd.DataFrame,
+    event_df: pd.DataFrame,
+    output_csv: str,
+    cols: list,
+):
+    """
+    Create meta.xml file for the Darwin Core dataset.
+
+    Args:
+        dwc_df (DataFrame): DataFrame containing Darwin Core occurrence data.
+        emof_df (DataFrame): DataFrame containing eMoF data.
+        event_df (DataFrame): DataFrame containing event data.
+        output_csv (str): Path to the output CSV file.
+        dir (str): Directory where the meta.xml will be saved.
+        cols (list): List of occurrence columns to include in the meta.xml.
+    """
+    # Ensure the directory exists
+    try:
+        os.path.exists(output_csv)
+    except:
+        print(f"Missing directory: {output_csv}")
+
+    # create and include the meta.xml and eml.xml
+    # set the meta.xml paramaters by hand, using the format of the dataframes above
+    meta_xml_vars = {}
+
+    # when writing dwc occurrence file, we only save some columns
+    dwc_df = dwc_df[cols].copy()
+
+    meta_xml_vars["cols_list"] = dwc_df.columns.tolist()
+    meta_xml_vars["occurrence_filename"] = output_csv
+    meta_xml_vars["emof_cols_list"] = emof_df.columns.tolist()
+    meta_xml_vars["emof_filename"] = output_csv.replace("occurrence", "emof")
+    meta_xml_vars["event_cols_list"] = event_df.columns.tolist()
+    meta_xml_vars["event_filename"] = output_csv.replace("occurrence", "event")
+
+    # grab the template file for making meta.xml
+    meta_template_file = codecs.open("templates/meta.xml.j2", "r", "UTF-8").read()
+    meta_template = Template(meta_template_file)
+    meta_result_string = meta_template.render(meta_xml_vars)
+    dir = os.path.join(*output_csv.split("\\")[:-1])
+    meta_file = f"{dir}/meta.xml"
+
+    fh = codecs.open(meta_file, "wb+", "UTF-8")
+    fh.write(meta_result_string)
+    fh.close()
+    meta_full_path = os.path.abspath(meta_file)
+    print(f"  Meta XML has been written to '{meta_full_path}'.")
 
 
 def convert_to_dwc_individual(fname):
