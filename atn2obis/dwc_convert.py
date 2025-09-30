@@ -13,35 +13,29 @@ from ncei_mapping import ncei_accession_mapping as df_map
 
 def create_dwc_occurrence(ds: xr.Dataset, output_csv: str, df_map: pd.DataFrame):
     """Create a Darwin Core Occurrence CSV from an xarray Dataset."""
-    source_file = os.path.basename(ds.encoding.get("source"))
+    fname = ds.encoding.get("source")
+    if fname is not None:
+        source_file = Path(fname).name
+    else:
+        msg = f"Cannot find file name in {ds.encoding=}."
+        raise ValueError(msg)
+    file_map_entry = df_map[df_map["file_name"] == source_file].squeeze()
+
     # bail if we can't find the file in the mapping table.
-    if source_file not in df_map["file_name"].values:
+    if file_map_entry.empty:
         raise KeyError(f"File {source_file} not found in NCEI Accession mapping table.")
 
-    filename = os.path.splitext(source_file)[
-        0
-    ]  # "ioos_atn_{ds.ptt_id}_{start_date}_{end_date}""
-
-    file_map_entry = df_map[df_map["file_name"] == source_file].iloc[0]
-
-    acce_no = file_map_entry["accession"]
-    related_data_url = file_map_entry["related_data_url"]
-
+    filename = Path(source_file).stem  # "ioos_atn_{ds.ptt_id}_{start_date}_{end_date}""
     dwc_df = pd.DataFrame()
-    dwc_df["occurrenceID"] = (
-        "ioos_atn_"
-        + ds.ptt_id
-        + "_"
-        + ds["time"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-        + "_"
-        + ds["z"].astype(str)
-        + "_"
-        + ds.animal_common_name.replace(" ", "_")
-    )
+
+    date = ds["time"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    occurrenceID = f"ioos_atn_{ds['ptt_id']}_{date}_{ds['z']}_{ds['animal_common_name'].replace(' ', '_')}"
+    organismID = f"{ds['platform_id']}_{ds['animal_common_name'].replace(' ', '_')}"
+    associatedReferences = f"https://doi.org/10.25921/wp4e-ph20; https://www.ncei.noaa.gov/archive/accession/{file_map_entry['accession']}; {file_map_entry['related_data_url']}"
+
+    dwc_df["occurrenceID"] = occurrenceID
     dwc_df["eventID"] = filename
-    dwc_df["organismID"] = (
-        ds.platform_id + "_" + ds.animal_common_name.replace(" ", "_")
-    )
+    dwc_df["organismID"] = organismID
     dwc_df["occurrenceStatus"] = "present"
     dwc_df["basisOfRecord"] = ds["type"]
     dwc_df["eventDate"] = ds["time"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -55,14 +49,13 @@ def create_dwc_occurrence(ds: xr.Dataset, output_csv: str, df_map: pd.DataFrame)
     dwc_df["taxonRank"] = ds["animal"].attrs["rank"]
     dwc_df["lifeStage"] = ds["animal_life_stage"].values.tolist()
     dwc_df["sex"] = ds["animal_sex"].values.tolist()
-    dwc_df["associatedReferences"] = (
-        f"https://doi.org/10.25921/wp4e-ph20; https://www.ncei.noaa.gov/archive/accession/{acce_no}; {related_data_url}"
-    )
+    dwc_df["associatedReferences"] = associatedReferences
+    # FIXME: Should these be min/max?
     dwc_df["minimumDepthInMeters"] = ds["z"].values.tolist()
     dwc_df["maximumDepthInMeters"] = ds["z"].values.tolist()
-    dwc_df["bibliographicCitation"] = ds.citation
+    dwc_df["bibliographicCitation"] = ds["citation"]
 
-    # set basisOfRecord
+    # set basisOfRecord...
     dwc_df.loc[dwc_df["basisOfRecord"] == "User", "basisOfRecord"] = "HumanObservation"
     dwc_df.loc[dwc_df["basisOfRecord"] == "Argos", "basisOfRecord"] = (
         "MachineObservation"
@@ -102,7 +95,7 @@ def create_dwc_occurrence(ds: xr.Dataset, output_csv: str, df_map: pd.DataFrame)
 
     # --- Add Occurrence Remarks ---
     dwc_df["occurrenceRemarks"] = (
-        f"This is a representative occurrence from a full deployment. For the complete dataset please see https://www.ncei.noaa.gov/archive/accession/{acce_no}."
+        f"This is a representative occurrence from a full deployment. For the complete dataset please see https://www.ncei.noaa.gov/archive/accession/{file_map_entry['accession']}."
     )
 
     print(f"  Extracted {len(dwc_df)} occurrences to first row in hour.")
