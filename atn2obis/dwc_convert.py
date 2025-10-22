@@ -434,11 +434,12 @@ def _load_data(fname):
 
 def convert_to_dwc_individual(fname):
     ds = _load_data(fname)
+
     # Map to Darwin Core Occurrence Terms.
-    dwc_df, cols = create_dwc_occurrence(ds, df_map)
+    dwc_df = create_dwc_occurrence(ds)
 
     # Create and save eml.
-    create_eml(ds, df_map)
+    create_eml(ds)
 
     # Event and eMoF (as needed).
     event_df = create_dwc_event(ds, dwc_df)
