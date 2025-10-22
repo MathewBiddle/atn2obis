@@ -8,10 +8,34 @@ import xarray as xr
 import pandas as pd
 
 
-from ncei_mapping import ncei_accession_mapping as df_map
+_cols = [
+    "eventID",
+    "occurrenceID",
+    "occurrenceStatus",
+    "basisOfRecord",
+    "organismID",
+    "eventDate",
+    "decimalLatitude",
+    "decimalLongitude",
+    "geodeticDatum",
+    "scientificName",
+    "scientificNameID",
+    "samplingProtocol",
+    "kingdom",
+    "taxonRank",
+    "lifeStage",
+    "sex",
+    "associatedReferences",
+    "coordinateUncertaintyInMeters",
+    "minimumDepthInMeters",
+    "maximumDepthInMeters",
+    "dataGeneralizations",
+    "bibliographicCitation",
+    "occurrenceRemarks",
+]
 
 
-def create_dwc_occurrence(ds: xr.Dataset, output_csv: str, df_map: pd.DataFrame):
+def create_dwc_occurrence(ds: xr.Dataset, df_map: pd.DataFrame):
     """Create a Darwin Core Occurrence CSV from an xarray Dataset."""
     fname = ds.encoding.get("source")
     if fname is not None:
@@ -22,6 +46,8 @@ def create_dwc_occurrence(ds: xr.Dataset, output_csv: str, df_map: pd.DataFrame)
     file_map_entry = df_map[df_map["file_name"] == source_file].squeeze()
 
     # bail if we can't find the file in the mapping table.
+    # TODO: What is a file exists but is not listed in the mapping? Should we report it somewhere?
+    # or should we be using the mapping only from the start?
     if file_map_entry.empty:
         raise KeyError(f"File {source_file} not found in NCEI Accession mapping table.")
 
@@ -29,8 +55,16 @@ def create_dwc_occurrence(ds: xr.Dataset, output_csv: str, df_map: pd.DataFrame)
     dwc_df = pd.DataFrame()
 
     date = ds["time"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-    occurrenceID = f"ioos_atn_{ds['ptt_id']}_{date}_{ds['z']}_{ds['animal_common_name'].replace(' ', '_')}"
-    organismID = f"{ds['platform_id']}_{ds['animal_common_name'].replace(' ', '_')}"
+    occurrenceID = (
+        f"ioos_atn_{ds.attrs['ptt_id']}_"
+        + date
+        + "_"
+        + ds["z"].astype(str)
+        + f"_{ds.attrs['animal_common_name'].replace(' ', '_')}"
+    )
+    organismID = (
+        f"{ds.attrs['platform_id']}_{ds.attrs['animal_common_name'].replace(' ', '_')}"
+    )
     associatedReferences = f"https://doi.org/10.25921/wp4e-ph20; https://www.ncei.noaa.gov/archive/accession/{file_map_entry['accession']}; {file_map_entry['related_data_url']}"
 
     dwc_df["occurrenceID"] = occurrenceID
@@ -53,9 +87,9 @@ def create_dwc_occurrence(ds: xr.Dataset, output_csv: str, df_map: pd.DataFrame)
     # FIXME: Should these be min/max?
     dwc_df["minimumDepthInMeters"] = ds["z"].values.tolist()
     dwc_df["maximumDepthInMeters"] = ds["z"].values.tolist()
-    dwc_df["bibliographicCitation"] = ds["citation"]
+    dwc_df["bibliographicCitation"] = ds.attrs["citation"]
 
-    # set basisOfRecord...
+    # Set basisOfRecord.
     dwc_df.loc[dwc_df["basisOfRecord"] == "User", "basisOfRecord"] = "HumanObservation"
     dwc_df.loc[dwc_df["basisOfRecord"] == "Argos", "basisOfRecord"] = (
         "MachineObservation"
@@ -64,21 +98,19 @@ def create_dwc_occurrence(ds: xr.Dataset, output_csv: str, df_map: pd.DataFrame)
         "MachineObservation"
     )
 
-    # filter to respectable locations
-    # drop A, B, and Z records
+    # Filter to respectable locations.
+    # drop A, B, and Z records.
     dwc_df["location_class"] = ds["location_class"].to_series()
     valid_locations = ~dwc_df["location_class"].isin(["A", "B", "Z"])
     dwc_df = dwc_df[valid_locations].copy()
 
-    print(f"  Extracted {len(dwc_df)} occurrences with valid locations.")
-
-    # Map location class to coordinate uncertainty
+    # Map location class to coordinate uncertainty.
     uncertainty_map = {"nan": 0, "G": 200, "3": 250, "2": 500, "1": 1500, "0": 10000}
     dwc_df["coordinateUncertaintyInMeters"] = dwc_df["location_class"].map(
         uncertainty_map
     )
 
-    # --- Define Occurrences: First detection per location per hour ---
+    # Define Occurrences: First detection per location per hour.
     dwc_df["event_hour"] = pd.to_datetime(dwc_df["eventDate"]).dt.strftime(
         "%Y-%m-%dT%H"
     )
@@ -93,45 +125,12 @@ def create_dwc_occurrence(ds: xr.Dataset, output_csv: str, df_map: pd.DataFrame)
     ] = ""
     dwc_df = dwc_df.drop_duplicates(subset=["event_hour"], keep="first").copy()
 
-    # --- Add Occurrence Remarks ---
+    # Add Occurrence Remarks.
     dwc_df["occurrenceRemarks"] = (
         f"This is a representative occurrence from a full deployment. For the complete dataset please see https://www.ncei.noaa.gov/archive/accession/{file_map_entry['accession']}."
     )
 
-    print(f"  Extracted {len(dwc_df)} occurrences to first row in hour.")
-
-    # only pick specific columns to save
-    cols = [
-        "eventID",
-        "occurrenceID",
-        "occurrenceStatus",
-        "basisOfRecord",
-        "organismID",
-        "eventDate",
-        "decimalLatitude",
-        "decimalLongitude",
-        "geodeticDatum",
-        "scientificName",
-        "scientificNameID",
-        "samplingProtocol",
-        "kingdom",
-        "taxonRank",
-        "lifeStage",
-        "sex",
-        "associatedReferences",
-        "coordinateUncertaintyInMeters",
-        "minimumDepthInMeters",
-        "maximumDepthInMeters",
-        "dataGeneralizations",
-        "bibliographicCitation",
-        "occurrenceRemarks",
-    ]
-
-    # Save the individual CSV
-    dwc_df.to_csv(output_csv, columns=cols, index=False)
-    print(f"  Saved data to '{output_csv}'")
-
-    return dwc_df, cols
+    return dwc_df
 
 
 def save_eml_file(eml_metadata: dict) -> str:
@@ -405,31 +404,34 @@ def create_meta_xml(
     print(f"  Meta XML has been written to '{meta_full_path}'.")
 
 
-def convert_to_dwc_individual(fname, output_csv: Path):
-    with xr.open_dataset(fname, engine="netcdf4") as ds:
+def _load_data(fname):
+    """Data Cleaning and Preparation."""
+    with xr.open_dataset(fname) as ds:
         df = ds.to_dataframe().reset_index()
 
-        print(f"Found {len(df)} records.")
+    if "lat" not in df.columns or "lon" not in df.columns:
+        msg = f"Skipping {fname}: missing location data."
+        raise ValueError(msg)
 
-        # --- Data Cleaning and Preparation ---
-        if "lat" not in df.columns or "lon" not in df.columns:
-            msg = f"Skipping {fname}: missing location data."
-            raise ValueError(msg)
+    df.dropna(subset=["lat", "lon", "time"], inplace=True)
+    if df.empty:
+        msg = f"Skipping {fname}: no valid records."
+        raise ValueError(msg)
+    # TODO: We should do all those checks in the ds obj instead of the eager data evaluation into a DataFrame.
+    return ds
 
-        df.dropna(subset=["lat", "lon", "time"], inplace=True)
-        if df.empty:
-            msg = f"Skipping {fname}: no valid records."
-            raise ValueError(msg)
 
-        # --- Map to Darwin Core Occurrence Terms ---
-        dwc_df, cols = create_dwc_occurrence(ds, output_csv, df_map)
+def convert_to_dwc_individual(fname):
+    ds = _load_data(fname)
+    # Map to Darwin Core Occurrence Terms.
+    dwc_df, cols = create_dwc_occurrence(ds, df_map)
 
-        # Create and save eml
-        create_eml(ds, df_map)
+    # Create and save eml.
+    create_eml(ds, df_map)
 
-        # --- Event and eMoF (as needed) ---
-        event_df = create_dwc_event(ds, dwc_df, output_csv)
-        emof_df = create_dwc_emof(ds, dwc_df, output_csv)
+    # Event and eMoF (as needed).
+    event_df = create_dwc_event(ds, dwc_df)
+    emof_df = create_dwc_emof(ds, dwc_df)
 
-        # --- Create meta.xml file ---
-        create_meta_xml(dwc_df, emof_df, event_df, output_csv, cols)
+    # Create meta.xml file.
+    create_meta_xml(dwc_df, emof_df, event_df, _cols)
