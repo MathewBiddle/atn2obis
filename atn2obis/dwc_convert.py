@@ -2,7 +2,6 @@ import re
 import shapely
 import os  # replace with pathlib
 from pathlib import Path
-import codecs  # should not be necessary in py>=3
 from jinja2 import Template
 import xarray as xr
 import pandas as pd
@@ -35,23 +34,36 @@ _cols = [
 ]
 
 
-def create_dwc_occurrence(ds: xr.Dataset, df_map: pd.DataFrame):
-    """Create a Darwin Core Occurrence CSV from an xarray Dataset."""
+def _map_entry(ds):
+    from atn2obis.ncei_mapping import get_ncei_accession_mapping
+
+    # FIXME: Expose the refresh option to users.
+    df_map = get_ncei_accession_mapping(refresh=False)
+
     fname = ds.encoding.get("source")
     if fname is not None:
         source_file = Path(fname).name
     else:
         msg = f"Cannot find file name in {ds.encoding=}."
         raise ValueError(msg)
-    file_map_entry = df_map[df_map["file_name"] == source_file].squeeze()
+    return df_map.loc[df_map["file_name"] == source_file].squeeze()
+
+
+def create_dwc_occurrence(ds: xr.Dataset):
+    """Create a Darwin Core Occurrence CSV from an xarray Dataset."""
+    file_map_entry = _map_entry(ds)
 
     # bail if we can't find the file in the mapping table.
     # TODO: What is a file exists but is not listed in the mapping? Should we report it somewhere?
     # or should we be using the mapping only from the start?
     if file_map_entry.empty:
-        raise KeyError(f"File {source_file} not found in NCEI Accession mapping table.")
+        raise KeyError(
+            f"File {file_map_entry['file_name']} not found in NCEI Accession mapping table."
+        )
 
-    filename = Path(source_file).stem  # "ioos_atn_{ds.ptt_id}_{start_date}_{end_date}""
+    filename = Path(
+        file_map_entry["file_name"]
+    ).stem  # "ioos_atn_{ds.ptt_id}_{start_date}_{end_date}""
     dwc_df = pd.DataFrame()
 
     date = ds["time"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -133,7 +145,7 @@ def create_dwc_occurrence(ds: xr.Dataset, df_map: pd.DataFrame):
     return dwc_df
 
 
-def save_eml_file(eml_metadata: dict) -> str:
+def _save_eml_file(eml_metadata: dict) -> str:
     """
     Save EML dictionary in a file
     Author: Jon Pye, Angela Dini
@@ -141,33 +153,35 @@ def save_eml_file(eml_metadata: dict) -> str:
     :param eml_metadata: dictionary of EML metadata
     :return: filepath of where the EML filepath will be
     """
-    # Write it out to the package
-    template_file = codecs.open("templates/eml.xml.j2", "r", "UTF-8").read()
-    template = Template(template_file)
+    # Write it out to the package.
+    with (
+        Path(__file__)
+        .parent.joinpath("templates", "eml.xml.j2")
+        .open() as template_file
+    ):
+        template = Template(template_file)
     result_string = template.render(eml_metadata)
+    # FIXME: What is filename here?
     eml_file = "data/dwc/{filename}/eml.xml".format(**eml_metadata)
-    fh = codecs.open(eml_file, "wb+", "UTF-8")
-    fh.write(result_string)
-    fh.close()
-    eml_full_path = os.path.abspath(eml_file)
-    print(f"  EML metadata has been written to '{eml_full_path}'.")
+    with open(eml_file, "wb+") as fh:
+        fh.write(result_string)
+    eml_full_path = Path(eml_file).absolute()
     return eml_full_path
 
 
-def create_eml(ds: xr.Dataset, df_map: pd.DataFrame):
+def create_eml(ds: xr.Dataset):
     eml_metadata = ds.attrs
-    source_file = os.path.basename(ds.encoding.get("source"))
-    file_map_entry = df_map[df_map["file_name"] == source_file].iloc[0]
+    file_map_entry = _map_entry(ds)
 
-    contributors = dict()
-    for attr in [
-        x for x in ds.attrs if re.match(r"contributor_(?!role_vocabulary\b).*", x)
-    ]:
-        contributors[attr] = ds.attrs[attr].split(",")
+    contributors = {
+        k: v.split(",")
+        for k, v in ds.attrs.items()
+        if k.startswith("contributor") and not k.endswith("role_vocabulary")
+    }
 
     contributors_list = [
-        {key: contributors[key][i] for key in contributors}
-        for i in range(len(next(iter(contributors.values()))))
+        {key: contributors[key][k] for key in contributors}
+        for k in range(len(next(iter(contributors.values()))))
     ]
 
     other_meta = {
@@ -181,15 +195,11 @@ def create_eml(ds: xr.Dataset, df_map: pd.DataFrame):
         "data_manager_phone": "",
         "data_manager_email": "mmckinzie@mbari.org",
         "contributors": contributors_list,
-        "ncei_accession_number": file_map_entry[
-            "accession"
-        ],  # df_map.loc[df_map['file_name'] == ds.encoding.get('source').split("\\")[-1], 'accession'].values[0],
+        "ncei_accession_number": file_map_entry["accession"],
         "related_data_url": file_map_entry["related_data_url"],
         "related_data_citation": file_map_entry["related_data_citation"],
-        "ncei_title": file_map_entry[
-            "title"
-        ],  # df_map.loc[df_map['file_name'] == ds.encoding.get('source').split("\\")[-1], 'title'].values[0],
-        "filename": os.path.splitext(source_file)[0],
+        "ncei_title": file_map_entry["title"],
+        "filename": file_map_entry["file_name"].strip(".nc"),
         "nc_globals": str(ds.attrs),
     }
 
@@ -199,7 +209,8 @@ def create_eml(ds: xr.Dataset, df_map: pd.DataFrame):
 
     eml_metadata.update(instrument_info)
 
-    save_eml_file(eml_metadata)
+    # FIXME: Not sure if I have the correct saving function.
+    # _save_eml_file(eml_metadata)
 
     return eml_metadata
 
