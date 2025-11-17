@@ -48,7 +48,7 @@
       <givenName>{{ publisher_name }}</givenName>
       <surName>{{ publisher_name.split(" ")[-1] }}</surName>
     </individualName>-->
-    <organizationName>{{ publisher_name }}</organizationName>
+    <!--<organizationName>{{ publisher_name }}</organizationName>-->
     <positionName>Animal Telemetry Network</positionName>
     <address>
         <country>{{ publisher_country }}</country>
@@ -206,16 +206,16 @@ Recognize the limitations of data in OBIS. See https://manual.obis.org/policy.ht
         </description>
       </qualityControl>
   </methods>
-  <project>
-      <title>{{ project }}</title>
+  <project id="ATN">
+      <title>U.S. Animal Telemetry Network (ATN)</title>
       <personnel>
         <individualName>
-          <givenName>{{ creator_name.split(" ")[0] }}</givenName>
-          <surName>{{ creator_name.split(" ")[-1] }}</surName>
+          <givenName>{{ data_manager_firstname }}</givenName>
+          <surName>{{ data_manager_lastname }}</surName>
         </individualName>
-        <role>{{ creator_role|replace('I',' i') }}</role>
+        <role>{{ data_manager_title }}</role>
       </personnel>
-    <abstract><para>{{ project }}</para>
+    <abstract><para>Movements of marine animals are a fundamental element of ocean ecosystem dynamics. Telemetry, the use of electronic tag technology to study animal movement, is a critical tool for the biological monitoring of marine life. The multi-agency U.S. Animal Telemetry Network (ATN) has been established to provide unity, stability, and continuity to the national infrastructure that facilitates the collection, management, and availability of this marine animal telemetry data.</para>
     </abstract>
   </project>
 </dataset>

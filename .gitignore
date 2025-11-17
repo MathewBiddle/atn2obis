@@ -1,2 +1,6 @@
 _version.py
 .ipynb_checkpoints/
+atn2obis/data/
+atn2obis/__pycache__/
+.vscode/
+notebooks/.env

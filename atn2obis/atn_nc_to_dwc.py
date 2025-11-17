@@ -3,10 +3,12 @@ from bs4 import BeautifulSoup
 from jinja2 import Template
 from owslib.iso import namespaces
 from requests_toolbelt.multipart.encoder import MultipartEncoder
-from shapely.geometry import LineString
+from shapely.geometry import Point, MultiPoint
 from urllib.parse import urljoin, urlparse
 from urllib.request import urlopen
 import codecs
+import csv
+import json
 import os
 import pandas as pd
 import re
@@ -76,6 +78,9 @@ def get_ncei_accession_mapping():
             root = iso_tree.getroot()
 
             # Collect terms of interest.
+
+            version = root.findall('.//gmd:CI_Citation/gmd:title/gco:CharacterString',namespaces)[-1].text.split("v")[-1]
+
             title = pd.DataFrame(
                 {
                     "title": [
@@ -90,6 +95,9 @@ def get_ncei_accession_mapping():
                     "end_date": [
                         root.find(".//gml:TimePeriod/gml:endPosition", namespaces).text
                     ],
+                    "version": [
+                        version
+                    ]
                 }
             )
 
@@ -129,7 +137,7 @@ def get_ncei_accession_mapping():
                     arc = re.search("(arc[0-9]{1,4})", string)
                     if arc:
                         title["arc"] = [arc.group()]
-                        xml_manifest = f"https://www.ncei.noaa.gov/data/oceans/archive/{arc.group()}/{acc}/{acc}.1.1.xml"
+                        xml_manifest = f"https://www.ncei.noaa.gov/data/oceans/archive/{arc.group()}/{acc}/{acc}.{version}.xml"
                         title["xml"] = [xml_manifest]
 
                         iso_mani = _openurl_with_retry(xml_manifest)
@@ -271,6 +279,7 @@ def create_dwc_occurrence(ds: xr.Dataset, output_csv: str, df_map: pd.DataFrame)
     dwc_df["geodeticDatum"] = ds.crs.epsg_code
     dwc_df["scientificName"] = ds["taxon_name"].values.tolist()
     dwc_df["scientificNameID"] = ds["taxon_lsid"].values.tolist()
+    dwc_df['vernacularName'] = ds.animal_common_name # NEW
     dwc_df["samplingProtocol"] = "satellite telemetry"
     dwc_df["kingdom"] = ds["animal"].attrs["kingdom"]
     dwc_df["taxonRank"] = ds["animal"].attrs["rank"]
@@ -339,6 +348,7 @@ def create_dwc_occurrence(ds: xr.Dataset, output_csv: str, df_map: pd.DataFrame)
         "decimalLatitude",
         "decimalLongitude",
         "geodeticDatum",
+        "vernacularName",
         "scientificName",
         "scientificNameID",
         "samplingProtocol",
@@ -361,6 +371,10 @@ def create_dwc_occurrence(ds: xr.Dataset, output_csv: str, df_map: pd.DataFrame)
 
     return dwc_df, cols
 
+def convex_hull(coords):
+    """Return convex hull from a list of (lon, lat)."""
+    points = MultiPoint([Point(x, y) for x, y in coords])
+    return points.convex_hull
 
 def create_dwc_event(ds: xr.Dataset, dwc_df: pd.DataFrame, output_csv: str):
     # create parent event that is a summary of dwc_df
@@ -370,14 +384,26 @@ def create_dwc_event(ds: xr.Dataset, dwc_df: pd.DataFrame, output_csv: str):
 
     ## Convex hull summary of the points
     points = list(zip(dwc_df["decimalLongitude"], dwc_df["decimalLatitude"]))
-    event_df["footprintWKT"] = shapely.convex_hull(LineString(points))
+
+    # NEW
+    if len(points) > 1:
+        hull_180 = convex_hull(points) # MultiPoint([Point(x, y) for x, y in points]).convex_hull
+        # points_shifted = [(x+360 if x < 0 else x, y) for x, y in points]
+        # hull_360 = convex_hull(points_shifted) # MultiPoint([Point(x, y) for x, y in coords_shifted]).convex_hull
+        # # Choose the hull with smaller area
+        # best_hull = hull_180 if hull_180.area < hull_360.area else hull_360
+        event_df["footprintWKT"] = hull_180.wkt
+    else:
+        event_df["footprintWKT"] = Point(points).wkt
+
+    event_df["footprintWKT"] = ds.attrs["geospatial_bounds"] # NEW - override with original bounds
 
     event_df["minimumDepthInMeters"] = dwc_df["minimumDepthInMeters"].min()
     event_df["maximumDepthInMeters"] = dwc_df["maximumDepthInMeters"].max()
     event_df["eventType"] = "deployment"
     event_df["countryCode"] = "US"
     event_df["samplingProtocol"] = "satellite telemetry"
-    event_df["dynamicProperties"] = [str(ds.attrs)]
+    event_df["dynamicProperties"] = [json.dumps(ds.attrs)]#str(ds.attrs)] NEW
 
     event_df.to_csv(output_csv.replace("occurrence", "event"), index=False)
     print(f"  Created {len(event_df)} events.")
@@ -697,18 +723,18 @@ def convert_to_dwc_individual(file_paths, df_map, output_dir="data/dwc"):
                     print(f"  Skipping {base_filename}: no valid records.")
                     continue
 
-                # --- Map to Darwin Core Occurrence Terms ---
+                # --- Occurrence ---
                 dwc_df, cols = create_dwc_occurrence(ds, output_csv, df_map)
-
-                # Create and save eml
-                create_eml(ds, df_map)
-
-                # --- Event and eMoF (as needed) ---
+                # --- Event---
                 event_df = create_dwc_event(ds, dwc_df, output_csv)
+                # --- eMoF ---
                 emof_df = create_dwc_emof(ds, dwc_df, output_csv)
 
                 # --- Create meta.xml file ---
                 create_meta_xml(dwc_df, emof_df, event_df, output_csv, cols)
+
+                # Create and save eml
+                create_eml(ds, df_map)
 
                 # --- Package into DwC-A ---
                 output_dir_zip = f"data/dwc/{sub_dir}/"
@@ -892,6 +918,7 @@ def change_publishing_org_ipt_project(
 
     :return: URL of the resource
     """
+
     pub_orgs = {
         "NOAA Integrated Ocean Observing System": "1d38bb22-cbea-4845-8b0c-f62551076080",
         "No organization": "625a5522-1886-4998-be46-52c66dd566c9",
@@ -984,14 +1011,47 @@ def register_ipt_project(projname: str, ipt_url: str, ipt_session):
     pub_params = {
         "r": projname,  # resource = dataset name
         "checkbox-confirm": "true",  # checkbox-confirm
-        "yes-button": "Yes",
+        #"yes-button": "Yes",
     }
 
     contents = ipt_session.post(
         ipt_url + "manage/resource-registerResource.do", data=pub_params
     )
+
+    pub_params = {
+        "r": projname,  # resource = dataset name
+        #"checkbox-confirm": "true",  # checkbox-confirm
+        "yes-button": "Yes",
+    }
+    contents = ipt_session.post(
+        ipt_url + "manage/resource-registerResource.do", data=pub_params
+    )
+
     return contents
 
+def add_network_ipt_project(projname: str, ipt_url: str, ipt_session, id: str):
+    """
+    Add the OBIS network to the given IPT project
+    Author: Mathew Biddle
+    :param projname: the project name as given by get_obis_shortname()
+    :param ipt_url: URL of the IPT to publish to
+    :param ipt_session: authenticated requests session for the IPT
+    :param id: the network UUID to add this project to
+        OBIS = 2b7c7b4f-4d4f-40d3-94de-c28b6fa054a6
+        biologging = ab013f3a-3c00-42cb-9fdb-cb5f4ba20a4b
+    :return: URL of the resource
+    """
+
+
+    pub_params = {
+            "r": projname, 
+            "id": id, #"2b7c7b4f-4d4f-40d3-94de-c28b6fa054a6", # "Ocean Biodiversity Information System (OBIS)" biologging - ab013f3a-3c00-42cb-9fdb-cb5f4ba20a4b
+        }
+    contents = ipt_session.post(
+        ipt_url + "manage/resource-addNetwork.do", data=pub_params
+    )
+    
+    return contents
 
 def check_if_project_exists(projname: str, ipt_url: str, ipt_session):
     """
